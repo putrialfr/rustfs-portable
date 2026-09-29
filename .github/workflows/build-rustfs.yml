@@ -6,30 +6,124 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
-      - name: Download RustFS alpha.83 source
+      - name: Download RustFS alpha.83
         run: |
           git clone --depth 1 --branch 1.0.0-alpha.83 \
             https://github.com/rustfs/rustfs.git rustfs-src
 
-      - name: Build portable RustFS
-        working-directory: rustfs-src
+      - name: Build RustFS on Ubuntu 22.04
         run: |
+          docker run --rm \
+            -v "$PWD/rustfs-src:/src" \
+            -w /src \
+            ubuntu:22.04 \
+            bash -c '
+              set -e
+
+              apt-get update
+
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                curl \
+                build-essential \
+                pkg-config \
+                libssl-dev \
+                protobuf-compiler \
+                flatbuffers-compiler \
+                git \
+                ca-certificates
+
+              curl --proto "=https" --tlsv1.2 -sSf \
+                https://sh.rustup.rs | sh -s -- -y
+
+              source "$HOME/.cargo/env"
+
+              rustup show
+
+              export RUSTFLAGS="-C target-cpu=x86-64"
+
+              cargo fetch --locked
+
+              ./scripts/static.sh
+
+              cargo run --bin gproto
+
+              cargo build \
+                --release \
+                --locked \
+                --bin rustfs \
+                -j "$(nproc)"
+
+              mkdir -p /src/output
+
+              cp target/release/rustfs /src/output/rustfs
+
+              chmod +x /src/output/rustfs
+            '
+
+      - name: Check GLIBC requirement
+        run: |
+          strings rustfs-src/output/rustfs | grep -Eo 'GLIBC_[0-9.]+' | sort -Vu
+
+      - name: Create portable Docker image
+        run: |
+          cat > Dockerfile.portable <<'EOF'
+          FROM ubuntu:22.04
+
+          RUN apt-get update && \
+              apt-get install -y --no-install-recommends \
+                ca-certificates \
+                curl \
+                tzdata \
+                coreutils && \
+              rm -rf /var/lib/apt/lists/*
+
+          RUN groupadd -g 10001 rustfs && \
+              useradd -u 10001 -g rustfs -M -s /usr/sbin/nologin rustfs
+
+          RUN mkdir -p /data /logs && \
+              chown -R rustfs:rustfs /data /logs
+
+          COPY rustfs-src/output/rustfs /usr/bin/rustfs
+
+          RUN chmod +x /usr/bin/rustfs
+
+          ENV RUSTFS_VOLUMES=/data
+          ENV RUSTFS_ADDRESS=0.0.0.0:9000
+          ENV RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
+          ENV RUSTFS_CONSOLE_ENABLE=true
+
+          EXPOSE 9000 9001
+
+          VOLUME ["/data"]
+
+          USER rustfs
+
+          CMD ["/usr/bin/rustfs"]
+          EOF
+
           docker build \
-            --build-arg RUSTFLAGS="-C target-cpu=x86-64" \
-            -f Dockerfile.source \
+            -f Dockerfile.portable \
             -t rustfs/rustfs:1.0.0-alpha.83 \
             .
 
-      - name: Save Docker image
+      - name: Test RustFS binary
         run: |
-          docker save rustfs/rustfs:1.0.0-alpha.83 | gzip > rustfs-portable.tar.gz
+          docker run --rm \
+            --entrypoint /usr/bin/rustfs \
+            rustfs/rustfs:1.0.0-alpha.83 \
+            --version
+
+      - name: Save image
+        run: |
+          docker save rustfs/rustfs:1.0.0-alpha.83 \
+            | gzip > rustfs-portable.tar.gz
 
       - name: Upload image
         uses: actions/upload-artifact@v4
         with:
-          name: rustfs-portable-v2
+          name: rustfs-portable-v3
           path: rustfs-portable.tar.gz
           retention-days: 3
