@@ -27,13 +27,20 @@ jobs:
             build-essential pkg-config libssl-dev protobuf-compiler \
             flatbuffers-compiler musl-tools curl unzip ca-certificates
 
-      - name: Install Rust 1.93.1
+      - name: Build portable RustFS binary
+        working-directory: rustfs-src
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64
+          CARGO_INCREMENTAL: 0
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain 1.93.1
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup target add x86_64-unknown-linux-musl
-          rustc --version
+          rustup override set 1.93.1
+          ./scripts/static.sh
+          cargo +1.93.1 run --locked --bin gproto
+          cargo +1.93.1 build --release --locked \
+            --target x86_64-unknown-linux-musl \
+            --bin rustfs -j 2
+          test -x target/x86_64-unknown-linux-musl/release/rustfs
+          file target/x86_64-unknown-linux-musl/release/rustfs
 
       - name: Build portable RustFS binary
         working-directory: rustfs-src
