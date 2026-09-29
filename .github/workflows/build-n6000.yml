@@ -1,0 +1,87 @@
+name: Build RustFS alpha.83 - N6000 compatible
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout RustFS alpha.83
+        uses: actions/checkout@v4
+        with:
+          repository: rustfs/rustfs
+          ref: 1.0.0-alpha.83
+          path: rustfs-src
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential pkg-config libssl-dev protobuf-compiler \
+            flatbuffers-compiler musl-tools curl unzip ca-certificates
+
+      - name: Install Rust 1.93.1
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain 1.93.1
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add x86_64-unknown-linux-musl
+          rustc --version
+
+      - name: Build portable RustFS binary
+        working-directory: rustfs-src
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64
+          CARGO_INCREMENTAL: 0
+        run: |
+          ./scripts/static.sh
+          cargo run --locked --bin gproto
+          cargo build --release --locked \
+            --target x86_64-unknown-linux-musl \
+            --bin rustfs -j 2
+          test -x target/x86_64-unknown-linux-musl/release/rustfs
+          file target/x86_64-unknown-linux-musl/release/rustfs
+
+      - name: Create portable Docker image
+        run: |
+          cat > Dockerfile.n6000 <<'EOF'
+          FROM alpine:3.20
+          RUN apk add --no-cache ca-certificates curl tzdata
+          COPY rustfs-src/target/x86_64-unknown-linux-musl/release/rustfs /usr/bin/rustfs
+          RUN chmod +x /usr/bin/rustfs && mkdir -p /data /logs
+          ENV RUSTFS_VOLUMES=/data
+          ENV RUSTFS_ADDRESS=0.0.0.0:9000
+          ENV RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
+          ENV RUSTFS_CONSOLE_ENABLE=true
+          EXPOSE 9000 9001
+          VOLUME ["/data"]
+          ENTRYPOINT ["/usr/bin/rustfs"]
+          CMD ["/data"]
+          EOF
+          docker build --platform linux/amd64 \
+            -f Dockerfile.n6000 \
+            -t rustfs/rustfs:1.0.0-alpha.83 .
+
+      - name: Test image
+        run: |
+          docker run --rm --platform linux/amd64 \
+            --entrypoint /usr/bin/rustfs \
+            rustfs/rustfs:1.0.0-alpha.83 --version
+
+      - name: Export image
+        run: |
+          docker save rustfs/rustfs:1.0.0-alpha.83 | gzip > rustfs-alpha83-n6000.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfs-alpha83-n6000
+          path: rustfs-alpha83-n6000.tar.gz
+          retention-days: 7
