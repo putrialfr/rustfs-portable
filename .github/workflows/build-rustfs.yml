@@ -9,65 +9,59 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Download RustFS alpha.83
+      - name: Checkout RustFS alpha.83
         run: |
           git clone --depth 1 --branch 1.0.0-alpha.83 \
             https://github.com/rustfs/rustfs.git rustfs-src
 
-      - name: Build RustFS on Ubuntu 22.04
+      - name: Build static MUSL binary
         run: |
           docker run --rm \
             -v "$PWD/rustfs-src:/src" \
             -w /src \
-            ubuntu:22.04 \
+            rust:1.85-bookworm \
             bash -c '
               set -e
 
               apt-get update
-
-              DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                curl \
-                build-essential \
-                pkg-config \
-                libssl-dev \
+              apt-get install -y \
+                musl-tools \
                 protobuf-compiler \
                 flatbuffers-compiler \
-                git \
-                ca-certificates
+                pkg-config \
+                libssl-dev \
+                build-essential
 
-              curl --proto "=https" --tlsv1.2 -sSf \
-                https://sh.rustup.rs | sh -s -- -y
-
-              source "$HOME/.cargo/env"
-
-              rustup show
-
-              export RUSTFLAGS="-C target-cpu=x86-64"
-
-              cargo fetch --locked
+              rustup target add x86_64-unknown-linux-musl
 
               ./scripts/static.sh
 
               cargo run --bin gproto
 
+              export RUSTFLAGS="-C target-cpu=x86-64"
+
               cargo build \
                 --release \
                 --locked \
+                --target x86_64-unknown-linux-musl \
                 --bin rustfs \
                 -j "$(nproc)"
 
               mkdir -p /src/output
 
-              cp target/release/rustfs /src/output/rustfs
+              cp \
+                target/x86_64-unknown-linux-musl/release/rustfs \
+                /src/output/rustfs
 
               chmod +x /src/output/rustfs
             '
 
-      - name: Check GLIBC requirement
+      - name: Verify binary
         run: |
-          strings rustfs-src/output/rustfs | grep -Eo 'GLIBC_[0-9.]+' | sort -Vu
+          file rustfs-src/output/rustfs
+          strings rustfs-src/output/rustfs | grep -E 'GLIBC_[0-9.]+' || true
 
-      - name: Create portable Docker image
+      - name: Create Docker image
         run: |
           cat > Dockerfile.portable <<'EOF'
           FROM ubuntu:22.04
@@ -76,8 +70,7 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates \
                 curl \
-                tzdata \
-                coreutils && \
+                tzdata && \
               rm -rf /var/lib/apt/lists/*
 
           RUN groupadd -g 10001 rustfs && \
@@ -101,7 +94,7 @@ jobs:
 
           USER rustfs
 
-          CMD ["/usr/bin/rustfs"]
+          CMD ["/usr/bin/rustfs", "/data"]
           EOF
 
           docker build \
@@ -109,21 +102,21 @@ jobs:
             -t rustfs/rustfs:1.0.0-alpha.83 \
             .
 
-      - name: Test RustFS binary
+      - name: Test image
         run: |
           docker run --rm \
             --entrypoint /usr/bin/rustfs \
             rustfs/rustfs:1.0.0-alpha.83 \
             --version
 
-      - name: Save image
+      - name: Export image
         run: |
           docker save rustfs/rustfs:1.0.0-alpha.83 \
             | gzip > rustfs-portable.tar.gz
 
-      - name: Upload image
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rustfs-portable-v3
+          name: rustfs-portable-musl
           path: rustfs-portable.tar.gz
           retention-days: 3
