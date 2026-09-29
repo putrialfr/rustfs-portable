@@ -1,0 +1,39 @@
+name: Build RustFS portable
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Download RustFS alpha.83 source
+        run: |
+          git clone --depth 1 --branch 1.0.0-alpha.83 \
+            https://github.com/rustfs/rustfs.git rustfs-src
+
+      - name: Make CPU-portable build
+        working-directory: rustfs-src
+        run: |
+          sed -i '/^FROM rust:/a ENV RUSTFLAGS="-C target-cpu=x86-64"' Dockerfile.source
+
+      - name: Build Docker image
+        working-directory: rustfs-src
+        run: |
+          docker build \
+            -f Dockerfile.source \
+            -t rustfs/rustfs:1.0.0-alpha.83 \
+            .
+
+      - name: Save Docker image
+        run: |
+          docker save rustfs/rustfs:1.0.0-alpha.83 | gzip > rustfs-portable.tar.gz
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfs-portable
+          path: rustfs-portable.tar.gz
+          retention-days: 3
