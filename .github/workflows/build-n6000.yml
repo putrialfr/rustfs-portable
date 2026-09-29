@@ -27,6 +27,15 @@ jobs:
             build-essential pkg-config libssl-dev protobuf-compiler \
             flatbuffers-compiler musl-tools curl unzip ca-certificates
 
+      - name: Install Rust 1.93.1
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal
+          rustup target add x86_64-unknown-linux-musl \
+            --toolchain 1.93.1-x86_64-unknown-linux-gnu
+          rustc +1.93.1 --version
+          rustup target list --installed \
+            --toolchain 1.93.1-x86_64-unknown-linux-gnu
+
       - name: Build portable RustFS binary
         working-directory: rustfs-src
         env:
@@ -37,20 +46,6 @@ jobs:
           ./scripts/static.sh
           cargo +1.93.1 run --locked --bin gproto
           cargo +1.93.1 build --release --locked \
-            --target x86_64-unknown-linux-musl \
-            --bin rustfs -j 2
-          test -x target/x86_64-unknown-linux-musl/release/rustfs
-          file target/x86_64-unknown-linux-musl/release/rustfs
-
-      - name: Build portable RustFS binary
-        working-directory: rustfs-src
-        env:
-          RUSTFLAGS: -C target-cpu=x86-64
-          CARGO_INCREMENTAL: 0
-        run: |
-          ./scripts/static.sh
-          cargo run --locked --bin gproto
-          cargo build --release --locked \
             --target x86_64-unknown-linux-musl \
             --bin rustfs -j 2
           test -x target/x86_64-unknown-linux-musl/release/rustfs
@@ -72,6 +67,7 @@ jobs:
           ENTRYPOINT ["/usr/bin/rustfs"]
           CMD ["/data"]
           EOF
+
           docker build --platform linux/amd64 \
             -f Dockerfile.n6000 \
             -t rustfs/rustfs:1.0.0-alpha.83 .
@@ -84,7 +80,8 @@ jobs:
 
       - name: Export image
         run: |
-          docker save rustfs/rustfs:1.0.0-alpha.83 | gzip > rustfs-alpha83-n6000.tar.gz
+          docker save rustfs/rustfs:1.0.0-alpha.83 \
+            | gzip > rustfs-alpha83-n6000.tar.gz
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
